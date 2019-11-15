@@ -5,7 +5,7 @@ import { isValidElementType, isContextConsumer } from 'react-is'
 import Subscription from '../utils/Subscription'
 import { useIsomorphicLayoutEffect } from '../utils/useIsomorphicLayoutEffect'
 
-import { ReactReduxContext } from './Context'
+import { ReactReduxContext, SubscriptionContext } from './Context'
 
 // Define some constant arrays just to avoid re-creating these
 const EMPTY_ARRAY = []
@@ -163,6 +163,11 @@ export default function connectAdvanced(
       // Retrieve the store and ancestor subscription via context, if available
       const contextValue = useContext(ContextToUse)
 
+      // Check whether it should be kept subscribed
+      const subscriptionContextValue = useContext(SubscriptionContext)
+      const isSubscriptionConnected =
+        subscriptionContextValue.connected !== false
+
       // The store _must_ exist as either a prop or in context.
       // We'll check to see if it _looks_ like a Redux store first.
       // This allows us to pass through a `store` prop that is just a plain value.
@@ -248,6 +253,9 @@ export default function connectAdvanced(
       const renderIsScheduled = useRef(false)
 
       const actualChildProps = usePureOnlyMemo(() => {
+        if (!isSubscriptionConnected && lastChildProps.current) {
+          return lastChildProps.current
+        }
         // Tricky logic here:
         // - This render may have been triggered by a Redux store update that produced new child props
         // - However, we may have gotten new wrapper props after that
@@ -266,7 +274,12 @@ export default function connectAdvanced(
         // Note that we do this because on renders _not_ caused by store updates, we need the latest store state
         // to determine what the child props should be.
         return childPropsSelector(store.getState(), wrapperProps)
-      }, [store, previousStateUpdateResult, wrapperProps])
+      }, [
+        store,
+        previousStateUpdateResult,
+        wrapperProps,
+        isSubscriptionConnected
+      ])
 
       // We need this to execute synchronously every time we re-render. However, React warns
       // about useLayoutEffect in SSR, so we try to detect environment and fall back to
@@ -298,6 +311,11 @@ export default function connectAdvanced(
           if (didUnsubscribe) {
             // Don't run stale listeners.
             // Redux doesn't guarantee unsubscriptions happen until next dispatch.
+            return
+          }
+          if (subscriptionContextValue.connected === false) {
+            // Stop listening and don't do anything
+            subscription.tryUnsubscribe()
             return
           }
 
@@ -346,7 +364,9 @@ export default function connectAdvanced(
 
         // Actually subscribe to the nearest connected ancestor (or store)
         subscription.onStateChange = checkForUpdates
-        subscription.trySubscribe()
+        if (isSubscriptionConnected) {
+          subscription.trySubscribe()
+        }
 
         // Pull data from the store after first render in case the store has
         // changed since we began.
@@ -368,7 +388,7 @@ export default function connectAdvanced(
         }
 
         return unsubscribeWrapper
-      }, [store, subscription, childPropsSelector])
+      }, [store, subscription, childPropsSelector, isSubscriptionConnected])
 
       // Now that all that's done, we can finally try to actually render the child component.
       // We memoize the elements for the rendered child component as an optimization.
